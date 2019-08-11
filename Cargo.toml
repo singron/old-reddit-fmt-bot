@@ -1,0 +1,10 @@
+[package]
+name = "old-reddit-fmt-bot"
+version = "0.1.0"
+authors = ["Eric Culp <eculperic@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+orca = {version = "0.7", path = "../orca"}
+comrak = {version = "0.6", path = "../comrak"}
+htmlescape = "0.3"
