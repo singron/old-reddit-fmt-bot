@@ -12,4 +12,5 @@ git-version = "0.3"
 htmlescape = "0.3"
 log = "0.4"
 orca = {version = "0.7", git="https://github.com/singron/orca", branch="fork"}
+rand = "0.7"
 simple_logger = "1.0"

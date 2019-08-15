@@ -5,6 +5,7 @@ extern crate log;
 extern crate orca;
 extern crate simple_logger;
 
+use std::collections::VecDeque;
 use std::time::Duration;
 
 const VERSION: &str = git_version::git_describe!("--always", "--dirty");
@@ -79,8 +80,85 @@ fn find_comment<'a>(
     None
 }
 
-fn process_comments(username: &str, max_age: Duration, app: &orca::App, subreddit: &str) {
-    let comments: orca::data::Comments = app.create_comment_stream(subreddit);
+struct MultiSubreddit<'a> {
+    app: &'a orca::App,
+    names: &'static [&'static str],
+    caches: Vec<VecDeque<orca::data::Comment>>,
+    last_comment_names: Vec<Option<String>>,
+}
+
+impl<'a> MultiSubreddit<'a> {
+    fn new(app: &'a orca::App, names: &'static [&'static str]) -> MultiSubreddit<'a> {
+        MultiSubreddit {
+            app,
+            names,
+            caches: vec![VecDeque::new(); names.len()],
+            last_comment_names: vec![None; names.len()],
+        }
+    }
+    fn refresh(&mut self) {
+        let mut fails = 0;
+        for (idx, subreddit) in self.names.iter().enumerate() {
+            let last = self.last_comment_names[idx].as_ref().map(|s| s.as_str());
+            let res: orca::data::Listing<orca::data::Comment> = loop {
+                match self.app.get_recent_comments(subreddit, Some(100), last) {
+                    Ok(x) => {
+                        if fails > 0 {
+                            fails = fails - 1;
+                        }
+                        break x;
+                    }
+                    Err(e) => {
+                        println!(
+                            "Error get_recent_comments({:?}, {:?}): {}",
+                            subreddit, last, e
+                        );
+                        use rand::Rng;
+                        std::thread::sleep(Duration::from_millis(
+                            1000 * fails + rand::thread_rng().gen_range(0, 1000),
+                        ));
+                        fails = (fails + 1).min(10);
+                    }
+                }
+            };
+            if let Some(c) = res.children.front() {
+                self.last_comment_names[idx] = Some(c.name.clone());
+            }
+            // get_recent_comments returns reverse-chronological order, so unreverse it.
+            self.caches[idx].extend(res.children.into_iter().rev());
+        }
+    }
+}
+
+impl Iterator for MultiSubreddit<'_> {
+    type Item = orca::data::Comment;
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let mut created_utc = None;
+            let mut min_idx = None;
+            for (idx, cache) in self.caches.iter().enumerate() {
+                if let Some(c) = cache.front() {
+                    if created_utc.is_none() || c.created_utc < created_utc.unwrap() {
+                        min_idx = Some(idx);
+                        created_utc = Some(c.created_utc);
+                    }
+                }
+            }
+            if let Some(min_idx) = min_idx {
+                return self.caches[min_idx].pop_front();
+            }
+            // We are empty
+            self.refresh();
+        }
+    }
+}
+
+fn process_comments(
+    username: &str,
+    max_age: Duration,
+    app: &orca::App,
+    comments: &mut MultiSubreddit,
+) {
     for comment in comments {
         use std::convert::TryFrom;
         let created = std::time::SystemTime::UNIX_EPOCH
@@ -165,7 +243,8 @@ fn main() {
     drop(password);
 
     let max_age = std::time::Duration::from_secs(60 * 60 * 24); // 24h
-    process_comments(username, max_age, &app, "programming");
+    let mut multi = MultiSubreddit::new(&app, &["programming", "rust", "NixOS"]);
+    process_comments(username, max_age, &app, &mut multi);
 }
 
 #[cfg(test)]
