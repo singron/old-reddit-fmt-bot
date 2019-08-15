@@ -5,6 +5,8 @@ extern crate log;
 extern crate orca;
 extern crate simple_logger;
 
+use std::time::Duration;
+
 const VERSION: &str = git_version::git_describe!("--always", "--dirty");
 
 fn comrak_opts() -> comrak::ComrakOptions {
@@ -77,21 +79,8 @@ fn find_comment<'a>(
     None
 }
 
-fn main() {
-    simple_logger::init_with_level(log::Level::Warn).unwrap();
-    let secret = get_pass("Reddit/old-reddit-fmt-bot/secret");
-    let id = get_pass("Reddit/old-reddit-fmt-bot/id");
-    let password = get_pass("Misc/reddit.com/old-reddit-fmt-bot");
-    let mut app = orca::App::new("old fmt experiment", VERSION, "singron").unwrap();
-    let username = "old-reddit-fmt-bot";
-    app.authorize_script(&id, &secret, username, &password)
-        .unwrap();
-    // Remove secrets from memory
-    drop(secret);
-    drop(id);
-    drop(password);
-
-    let comments: orca::data::Comments = app.create_comment_stream("programming");
+fn process_comments(username: &str, max_age: Duration, app: &orca::App, subreddit: &str) {
+    let comments: orca::data::Comments = app.create_comment_stream(subreddit);
     for comment in comments {
         use std::convert::TryFrom;
         let created = std::time::SystemTime::UNIX_EPOCH
@@ -100,7 +89,6 @@ fn main() {
             ))
             .unwrap();
         let age = created.elapsed().unwrap();
-        let max_age = std::time::Duration::from_secs(60 * 60 * 24); // 24h
         println!("https://www.reddit.com{} {:?}", comment.permalink, age);
         // Never reply to ourselves
         if comment.author == username {
@@ -160,6 +148,24 @@ fn main() {
             println!("Error in comment: {}", e);
         }
     }
+}
+
+fn main() {
+    simple_logger::init_with_level(log::Level::Warn).unwrap();
+    let secret = get_pass("Reddit/old-reddit-fmt-bot/secret");
+    let id = get_pass("Reddit/old-reddit-fmt-bot/id");
+    let password = get_pass("Misc/reddit.com/old-reddit-fmt-bot");
+    let mut app = orca::App::new("old fmt experiment", VERSION, "singron").unwrap();
+    let username = "old-reddit-fmt-bot";
+    app.authorize_script(&id, &secret, username, &password)
+        .unwrap();
+    // Remove secrets from memory
+    drop(secret);
+    drop(id);
+    drop(password);
+
+    let max_age = std::time::Duration::from_secs(60 * 60 * 24); // 24h
+    process_comments(username, max_age, &app, "programming");
 }
 
 #[cfg(test)]
