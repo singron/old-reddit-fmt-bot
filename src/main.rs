@@ -1,7 +1,10 @@
 extern crate comrak;
+extern crate git_version;
 extern crate htmlescape;
 extern crate orca;
 extern crate simple_logger;
+
+const VERSION: &str = git_version::git_describe!("--always", "--dirty");
 
 fn comrak_opts() -> comrak::ComrakOptions {
     comrak::ComrakOptions {
@@ -78,7 +81,7 @@ fn main() {
     let secret = get_pass("Reddit/old-reddit-fmt-bot/secret");
     let id = get_pass("Reddit/old-reddit-fmt-bot/id");
     let password = get_pass("Misc/reddit.com/old-reddit-fmt-bot");
-    let mut app = orca::App::new("old fmt experiment", "0.1.0", "singron").unwrap();
+    let mut app = orca::App::new("old fmt experiment", VERSION, "singron").unwrap();
     let username = "old-reddit-fmt-bot";
     app.authorize_script(&id, &secret, username, &password)
         .unwrap();
