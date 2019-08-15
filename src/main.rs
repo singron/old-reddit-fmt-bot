@@ -1,6 +1,7 @@
 extern crate comrak;
 extern crate git_version;
 extern crate htmlescape;
+extern crate log;
 extern crate orca;
 extern crate simple_logger;
 
@@ -77,7 +78,7 @@ fn find_comment<'a>(
 }
 
 fn main() {
-    simple_logger::init().unwrap();
+    simple_logger::init_with_level(log::Level::Warn).unwrap();
     let secret = get_pass("Reddit/old-reddit-fmt-bot/secret");
     let id = get_pass("Reddit/old-reddit-fmt-bot/id");
     let password = get_pass("Misc/reddit.com/old-reddit-fmt-bot");

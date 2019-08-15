@@ -7,8 +7,9 @@ license = "AGPL3"
 readme = "README.md"
 
 [dependencies]
-orca = {version = "0.7", git="https://github.com/singron/orca", branch="fork"}
 comrak = "0.6"
-htmlescape = "0.3"
-simple_logger = "1.0"
 git-version = "0.3"
+htmlescape = "0.3"
+log = "0.4"
+orca = {version = "0.7", git="https://github.com/singron/orca", branch="fork"}
+simple_logger = "1.0"
