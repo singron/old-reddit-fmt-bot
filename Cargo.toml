@@ -3,8 +3,11 @@ name = "old-reddit-fmt-bot"
 version = "0.1.0"
 authors = ["Eric Culp <eculperic@gmail.com>"]
 edition = "2018"
+license = "AGPL3"
+readme = "README.md"
 
 [dependencies]
-orca = {version = "0.7", path = "../orca"}
-comrak = {version = "0.6", path = "../comrak"}
+orca = {version = "0.7", git="https://github.com/singron/orca", branch="fork"}
+comrak = "0.6"
 htmlescape = "0.3"
+simple_logger = "1.0"

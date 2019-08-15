@@ -1,6 +1,7 @@
 extern crate comrak;
 extern crate htmlescape;
 extern crate orca;
+extern crate simple_logger;
 
 fn comrak_opts() -> comrak::ComrakOptions {
     comrak::ComrakOptions {
@@ -73,6 +74,7 @@ fn find_comment<'a>(
 }
 
 fn main() {
+    simple_logger::init().unwrap();
     let secret = get_pass("Reddit/old-reddit-fmt-bot/secret");
     let id = get_pass("Reddit/old-reddit-fmt-bot/id");
     let password = get_pass("Misc/reddit.com/old-reddit-fmt-bot");
@@ -80,8 +82,22 @@ fn main() {
     let username = "old-reddit-fmt-bot";
     app.authorize_script(&id, &secret, username, &password)
         .unwrap();
-    let comments: orca::data::Comments = app.create_comment_stream("nixos");
+    // Remove secrets from memory
+    drop(secret);
+    drop(id);
+    drop(password);
+
+    let comments: orca::data::Comments = app.create_comment_stream("programming");
     for comment in comments {
+        use std::convert::TryFrom;
+        let created = std::time::SystemTime::UNIX_EPOCH
+            .checked_add(std::time::Duration::from_secs(
+                u64::try_from(comment.created_utc as i64).unwrap(),
+            ))
+            .unwrap();
+        let age = created.elapsed().unwrap();
+        let max_age = std::time::Duration::from_secs(60 * 60 * 24); // 24h
+        println!("https://www.reddit.com{} {:?}", comment.permalink, age);
         // Never reply to ourselves
         if comment.author == username {
             continue;
@@ -95,46 +111,49 @@ fn main() {
             }
             Ok(x) => x,
         };
-        if contains_fenced_block(&body) {
-            // This comment from the comments stream doesn't include replies, so let's load the
-            // whole tree.
-            let tree = match app.get_comment_tree(strip_type(&comment.link_id)) {
+        if !contains_fenced_block(&body) {
+            continue;
+        }
+        // This comment from the comments stream doesn't include replies, so let's load the
+        // whole tree.
+        let tree = loop {
+            match app.get_comment_tree(strip_type(&comment.link_id)) {
                 Err(e) => {
                     println!("Error: {:?}", e);
                     continue;
                 }
-                Ok(x) => x,
-            };
-            let tree_comment = find_comment(&tree, &comment.id);
-            if let Some(tree_comment) = tree_comment {
-                let mut already_replied = false;
-                for reply in &tree_comment.replies.children {
-                    if reply.author == username {
-                        already_replied = true;
-                        break;
-                    }
+                Ok(x) => break x,
+            }
+        };
+        let tree_comment = find_comment(&tree, &comment.id);
+        if let Some(tree_comment) = tree_comment {
+            let mut already_replied = false;
+            for reply in &tree_comment.replies.children {
+                if reply.author == username {
+                    already_replied = true;
+                    break;
                 }
-                // Don't reply to the same comment again.
-                if already_replied {
-                    continue;
-                }
-            } else {
-                // Maybe it was deleted?
-                println!(
-                    "Could not find comment {} on link {}",
-                    comment.id, comment.link_id
-                );
+            }
+            // Don't reply to the same comment again.
+            if already_replied {
                 continue;
             }
+        } else {
+            // Maybe it was deleted?
             println!(
-                "https://www.reddit.com/r/{}/comments/{}/_/{}",
-                comment.subreddit,
-                strip_type(&comment.link_id),
-                comment.id
+                "Could not find comment {} on link {}",
+                comment.id, comment.link_id
             );
-            println!("{}", body);
-            let reply = "Your comment uses one or more fenced code blocks. These don't render correctly in old reddit even if you authored them in new reddit. Please use code blocks indented with 4 spaces instead. See [my page](https://github.com/singron/old-reddit-fmt-bot/blob/master/about.md) for easy ways to do this and for information about this bot.";
-            println!("{}", reply);
+            continue;
+        }
+        if age > max_age {
+            continue;
+        }
+        println!("{}", body);
+        let reply = "Your comment uses one or more fenced code blocks (e.g. a block surrounded with ```` ``` ````). These don't render correctly in old reddit even if you authored them in new reddit. Please use code blocks indented with 4 spaces instead. See [my page](https://github.com/singron/old-reddit-fmt-bot/blob/master/about.md) for easy ways to do this and for information and source code for this bot.";
+        println!("{}", reply);
+        if let Err(e) = app.comment(reply, &comment.name) {
+            println!("Error in comment: {}", e);
         }
     }
 }
