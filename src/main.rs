@@ -8,6 +8,8 @@ extern crate simple_logger;
 use std::collections::VecDeque;
 use std::time::Duration;
 
+const DRY_RUN: bool = false;
+
 const VERSION: &str = git_version::git_describe!("--always", "--dirty");
 
 fn comrak_opts() -> comrak::ComrakOptions {
@@ -153,6 +155,42 @@ impl Iterator for MultiSubreddit<'_> {
     }
 }
 
+struct EscapeMarkdownLink<'a>(&'a str);
+
+impl std::fmt::Display for EscapeMarkdownLink<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Based on
+        // * https://spec.commonmark.org/0.29/#link-destination
+        // * https://www.reddit.com/wiki/markdown#wiki_tips_for_robots
+        let mut s = &self.0[..];
+        while !s.is_empty() {
+            let offset = s.find(|c: char| c == ')' || c == '(' || c == ' ' || c.is_ascii_control());
+            if let Some(offset) = offset {
+                if offset != 0 {
+                    f.write_str(&s[..offset])?;
+                }
+                // matched characters are ascii so this should be true.
+                debug_assert!(s.is_char_boundary(offset));
+                debug_assert!(s.is_char_boundary(offset + 1));
+
+                let c: char = s[offset..].chars().next().unwrap();
+                use std::fmt::Write;
+                if c == '(' || c == ')' {
+                    f.write_char('\\')?;
+                    f.write_str(&s[offset..offset + 1])?;
+                } else {
+                    write!(f, "%{:02X}", u32::from(c))?;
+                }
+                s = &s[offset + 1..];
+            } else {
+                f.write_str(s)?;
+                break;
+            }
+        }
+        Ok(())
+    }
+}
+
 fn process_comments(
     username: &str,
     max_age: Duration,
@@ -220,9 +258,26 @@ fn process_comments(
             continue;
         }
         println!("{}", body);
-        let reply = "Your comment uses one or more fenced code blocks (e.g. a block surrounded with ```` ``` ````). These don't render correctly in old reddit even if you authored them in new reddit. Please use code blocks indented with 4 spaces instead. See [my page](https://github.com/singron/old-reddit-fmt-bot/blob/master/about.md) for easy ways to do this and for information and source code for this bot.";
-        println!("{}", reply);
-        if let Err(e) = app.comment(reply, &comment.name) {
+        let reply = format!(
+            "Your comment uses fenced code blocks (e.g. blocks surrounded \n\
+             with ```` ``` ````). These don't render correctly in old \n\
+             reddit even if you authored them in new reddit. Please use \n\
+             code blocks indented with 4 spaces instead. See what the \n\
+             comment looks like in \n\
+             [new](https://new.reddit.com{permalink}) \n\
+             and \n\
+             [old](https://old.reddit.com{permalink}) \n\
+             reddit. \n\
+             [My page](https://github.com/singron/old-reddit-fmt-bot/blob/master/about.md) \n\
+             has easy ways to indent code as well as information and source code for this bot.",
+            permalink = EscapeMarkdownLink(&comment.permalink),
+        );
+        println!("{}", &reply);
+        if DRY_RUN {
+            println!("DRY_RUN: not commenting");
+            continue;
+        }
+        if let Err(e) = app.comment(&reply, &comment.name) {
             println!("Error in comment: {}", e);
         }
     }
@@ -269,6 +324,20 @@ mod tests {
         ];
         for (contains, body) in tests {
             assert_eq!(*contains, contains_fenced_block(body));
+        }
+    }
+
+    #[test]
+    fn test_escape_markdown_link() {
+        let tests: &[(&'static str, &'static str)] = &[
+            ("/test", "/test"),
+            ("/ test", "/%20test"),
+            ("/ ", "/%20"),
+            ("/\n", "/%0A"),
+            ("/(x)", "/\\(x\\)"),
+        ];
+        for (input, expect) in tests {
+            assert_eq!(expect, &format!("{}", EscapeMarkdownLink(input)));
         }
     }
 }
