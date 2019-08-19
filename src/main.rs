@@ -367,8 +367,9 @@ impl<'a> MultiSubreddit<'a> {
                 if let Some(min_idx) = min_idx {
                     let comment = self.caches[min_idx].pop_front().unwrap();
                     self.on_new_comment(comment);
+                } else {
+                    break;
                 }
-                break;
             }
             if self
                 .last_comments_made_check
