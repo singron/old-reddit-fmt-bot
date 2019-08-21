@@ -517,7 +517,7 @@ fn main() {
     drop(id);
     drop(password);
 
-    let mut multi = MultiSubreddit::new(&app, username, &["programming", "rust", "NixOS"]);
+    let mut multi = MultiSubreddit::new(&app, username, &["programming", "rust", "NixOS", "linux"]);
     loop {
         match multi.load_comments_made() {
             Ok(_) => break,
