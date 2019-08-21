@@ -142,6 +142,7 @@ struct MultiSubreddit<'a> {
     comments_made_dirty: bool,
     last_comments_made_check: Option<Instant>,
     backoff: Backoff,
+    last_refresh: Option<Instant>,
 }
 
 impl<'a> MultiSubreddit<'a> {
@@ -159,6 +160,7 @@ impl<'a> MultiSubreddit<'a> {
             comments_made: Vec::new(),
             comments_made_dirty: true,
             last_comments_made_check: None,
+            last_refresh: None,
             backoff: Backoff { fails: 0 },
         }
     }
@@ -184,7 +186,17 @@ impl<'a> MultiSubreddit<'a> {
     }
 
     fn refresh(&mut self) {
+        if let Some(last_refresh) = self.last_refresh {
+            let min_refresh = Duration::from_secs(4);
+            let e = last_refresh.elapsed();
+            if e < min_refresh {
+                std::thread::sleep(min_refresh - e);
+            }
+        }
         for (idx, subreddit) in self.names.iter().enumerate() {
+            if !self.caches[idx].is_empty() {
+                continue;
+            }
             let last = self.last_comment_names[idx].as_ref().map(|s| s.as_str());
             let res: orca::data::Listing<orca::data::Comment> = loop {
                 match self.app.get_recent_comments(subreddit, Some(100), last) {
@@ -221,6 +233,7 @@ impl<'a> MultiSubreddit<'a> {
                 }
             }
         }
+        self.last_refresh = Some(Instant::now());
     }
 
     fn on_new_comment(&mut self, comment: orca::data::Comment) {
@@ -378,16 +391,6 @@ impl<'a> MultiSubreddit<'a> {
             {
                 self.check_comments_made();
             }
-        }
-    }
-}
-
-impl Iterator for MultiSubreddit<'_> {
-    type Item = orca::data::Comment;
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            // We are empty
-            self.refresh();
         }
     }
 }
