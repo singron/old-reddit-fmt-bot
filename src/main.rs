@@ -103,6 +103,18 @@ impl Backoff {
         ));
         self.fails = (self.fails + 1).min(10);
     }
+
+    fn loop_wait<T, E, C: Fn() -> Result<T, E>, H: Fn(E)>(&mut self, call: C, on_err: H) -> T {
+        loop {
+            match call() {
+                Ok(x) => {
+                    self.ok();
+                    return x;
+                }
+                Err(e) => on_err(e),
+            }
+        }
+    }
 }
 
 struct MadeComment {
@@ -137,12 +149,13 @@ struct MultiSubreddit<'a> {
     username: &'a str,
     names: &'static [&'static str],
     caches: Vec<VecDeque<orca::data::Comment>>,
-    last_comment_names: Vec<Option<String>>,
+    recent_comment_names: Vec<VecDeque<String>>,
     comments_made: Vec<MadeComment>,
     comments_made_dirty: bool,
     last_comments_made_check: Option<Instant>,
     backoff: Backoff,
     last_refresh: Option<Instant>,
+    last_new_comment: Option<Instant>,
 }
 
 impl<'a> MultiSubreddit<'a> {
@@ -156,11 +169,12 @@ impl<'a> MultiSubreddit<'a> {
             username,
             names,
             caches: vec![VecDeque::new(); names.len()],
-            last_comment_names: vec![None; names.len()],
+            recent_comment_names: vec![VecDeque::new(); names.len()],
             comments_made: Vec::new(),
             comments_made_dirty: true,
             last_comments_made_check: None,
             last_refresh: None,
+            last_new_comment: None,
             backoff: Backoff { fails: 0 },
         }
     }
@@ -187,7 +201,7 @@ impl<'a> MultiSubreddit<'a> {
 
     fn refresh(&mut self) {
         if let Some(last_refresh) = self.last_refresh {
-            let min_refresh = Duration::from_secs(4);
+            let min_refresh = Duration::from_secs(5);
             let e = last_refresh.elapsed();
             if e < min_refresh {
                 std::thread::sleep(min_refresh - e);
@@ -197,24 +211,52 @@ impl<'a> MultiSubreddit<'a> {
             if !self.caches[idx].is_empty() {
                 continue;
             }
-            let last = self.last_comment_names[idx].as_ref().map(|s| s.as_str());
             let res: orca::data::Listing<orca::data::Comment> = loop {
-                match self.app.get_recent_comments(subreddit, Some(100), last) {
-                    Ok(x) => {
+                let recent_comment = self.recent_comment_names[idx].front().map(|s| s.as_str());
+                match self
+                    .app
+                    .get_recent_comments(subreddit, Some(100), recent_comment)
+                {
+                    Ok(res) => {
                         self.backoff.ok();
-                        break x;
+                        if res.children.is_empty() && recent_comment.is_some() {
+                            // If we try to use a deleted comment as the `before` parameter when
+                            // getting recent comments, we will get empty results forever.
+                            let name = recent_comment.unwrap();
+                            let backoff = &mut self.backoff;
+                            let app = &mut self.app;
+                            let comment = backoff.loop_wait(
+                                || app.get_comment(name),
+                                |e| println!("Error in get_comment({:?}): {}", name, e),
+                            );
+                            if comment.is_none() || comment.unwrap().author == "[deleted]" {
+                                // We will use the next most recent comment, or eventually get
+                                // another listing from scratch.
+                                self.recent_comment_names[idx].pop_front();
+                                continue;
+                            }
+                        }
+                        break res;
                     }
                     Err(e) => {
                         println!(
                             "Error get_recent_comments({:?}, {:?}): {}",
-                            subreddit, last, e
+                            subreddit, recent_comment, e
                         );
                         self.backoff.fail_wait();
                     }
                 }
             };
-            if let Some(c) = res.children.front() {
-                self.last_comment_names[idx] = Some(c.name.clone());
+            let skip = if res.children.len() > 10 {
+                res.children.len() - 10
+            } else {
+                0
+            };
+            for c in res.children.iter().rev().skip(skip) {
+                self.recent_comment_names[idx].push_front(c.name.clone());
+            }
+            if self.recent_comment_names[idx].len() > 10 {
+                self.recent_comment_names[idx].truncate(10);
             }
             // get_recent_comments returns reverse-chronological order, so unreverse it.
             self.caches[idx].extend(res.children.into_iter().rev());
@@ -364,7 +406,30 @@ impl<'a> MultiSubreddit<'a> {
     }
 
     fn process(&mut self) {
+        let mut error_mode = 0;
         loop {
+            if let Some(last_new_comment) = self.last_new_comment {
+                let minutes = last_new_comment.elapsed().as_secs() as f64 / 60.0;
+                if minutes > 90.0 {
+                    if error_mode != 3 {
+                        error_mode = 3;
+                        log::error!("Set error mode {}", error_mode);
+                        log::set_max_level(log::LevelFilter::Trace);
+                    }
+                } else if minutes > 60.0 {
+                    if error_mode != 2 {
+                        error_mode = 2;
+                        log::error!("Set error mode {}", error_mode);
+                        log::set_max_level(log::LevelFilter::Debug);
+                    }
+                } else if minutes > 30.0 {
+                    if error_mode != 1 {
+                        error_mode = 1;
+                        log::error!("Set error mode {}", error_mode);
+                        log::set_max_level(log::LevelFilter::Info);
+                    }
+                }
+            }
             self.refresh();
             loop {
                 let mut created_utc = None;
@@ -379,6 +444,12 @@ impl<'a> MultiSubreddit<'a> {
                 }
                 if let Some(min_idx) = min_idx {
                     let comment = self.caches[min_idx].pop_front().unwrap();
+                    self.last_new_comment = Some(Instant::now());
+                    if error_mode != 0 {
+                        log::error!("Resetting error mode");
+                        log::set_max_level(log::LevelFilter::Warn);
+                        error_mode = 0;
+                    }
                     self.on_new_comment(comment);
                 } else {
                     break;
@@ -432,7 +503,8 @@ impl std::fmt::Display for EscapeMarkdownLink<'_> {
 }
 
 fn main() {
-    simple_logger::init_with_level(log::Level::Warn).unwrap();
+    simple_logger::init_with_level(log::Level::Trace).unwrap();
+    log::set_max_level(log::LevelFilter::Warn);
     let secret = get_pass("Reddit/old-reddit-fmt-bot/secret");
     let id = get_pass("Reddit/old-reddit-fmt-bot/id");
     let password = get_pass("Misc/reddit.com/old-reddit-fmt-bot");
