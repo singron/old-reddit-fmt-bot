@@ -58,8 +58,6 @@ fn contains_problematic_fenced_block<'a>(body: &str) -> bool {
                             return true;
                         }
                     }
-
-                    return false;
                 }
             }
             _ => (),
@@ -583,6 +581,7 @@ mod tests {
             (false, "1.  ```\n    hi\n    ```"),
             (false, "1.  ```\n    hi\n    ```\n\n    hi"),
             (false, "> ```\n> hi\n> ```"),
+            (false, "```\nx\n```\n\n```\nx\n```"),
             (true, "x\n```\nhi\n```"),
             (true, "```rust\nhi\n```"),
             (true, "> ```\n> hi\n> hi\n> ```"),
@@ -593,6 +592,8 @@ mod tests {
             (true, "```\nx \n```"),
             (true, "```\nx\tx\n```"),
             (true, "```\nx  x\n```"),
+            (true, "```\nx\n```\n\n```\nx  x\n```"),
+            (true, "```\nx  x\n```\n\n```\nx\n```"),
         ];
         for (want, body) in tests {
             let got = contains_problematic_fenced_block(body);
