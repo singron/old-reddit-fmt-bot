@@ -2,10 +2,13 @@ extern crate comrak;
 extern crate failure;
 extern crate git_version;
 extern crate htmlescape;
+extern crate lazy_static;
 extern crate log;
 extern crate orca;
+extern crate regex;
 extern crate simple_logger;
 
+use std::cell::RefMut;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -19,15 +22,44 @@ fn comrak_opts() -> comrak::ComrakOptions {
     }
 }
 
-fn contains_fenced_block<'a>(body: &str) -> bool {
+fn contains_problematic_fenced_block<'a>(body: &str) -> bool {
     let arena = comrak::Arena::new();
     let ast = comrak::parse_document(&arena, body, &comrak_opts());
+    lazy_static::lazy_static! {
+        static ref BAD_CONTENTS: regex::bytes::Regex = regex::bytes::Regex::new(r"\t|  |^ | \n").unwrap();
+    }
     for node in ast.descendants() {
-        let mut n = node.data.borrow_mut();
+        let mut n: RefMut<comrak::nodes::Ast> = node.data.borrow_mut();
         match (*n).value {
             comrak::nodes::NodeValue::CodeBlock(ref mut block) => {
+                let block: &mut comrak::nodes::NodeCodeBlock = block;
                 if block.fenced {
-                    return true;
+                    // Some single line fenced blocks look OK. See
+                    // https://github.com/singron/old-reddit-fmt-bot/issues/1
+                    if !block.info.is_empty() {
+                        return true;
+                    }
+                    let b: &[u8] = &block.literal;
+                    if b.is_empty() {
+                        return true;
+                    }
+                    if b.get(b.len() - 1) != Some(&b'\n') {
+                        return true;
+                    }
+                    if b.iter().filter(|c| **c == b'\n').count() != 1 {
+                        return true;
+                    }
+                    if BAD_CONTENTS.is_match(b) {
+                        return true;
+                    }
+
+                    if let Some(prev) = node.previous_sibling() {
+                        if !prev.data.borrow().last_line_blank {
+                            return true;
+                        }
+                    }
+
+                    return false;
                 }
             }
             _ => (),
@@ -300,7 +332,7 @@ impl<'a> MultiSubreddit<'a> {
             }
             Ok(x) => x,
         };
-        if !contains_fenced_block(&body) {
+        if !contains_problematic_fenced_block(&body) {
             return;
         }
         // This comment from the comments stream doesn't include replies, so let's load the
@@ -382,7 +414,7 @@ impl<'a> MultiSubreddit<'a> {
                     continue;
                 }
             };
-            if contains_fenced_block(&parent_comment.body) {
+            if contains_problematic_fenced_block(&parent_comment.body) {
                 continue;
             }
             // They fixed their comment
@@ -537,21 +569,42 @@ mod tests {
     #[test]
     fn test_fenced_block() {
         let tests: &[(bool, &'static str)] = &[
-            (true, "```\nhi\n```"),
-            (true, "x\n```\nhi\n```"),
-            (true, "```rust\nhi\n```"),
-            (true, "> ```\n> hi\n> ```"),
-            (true, "1.  hi\n    \n    ```\n    hi\n    ```\n"),
-            (true, "```\n&\n```"),
             (false, ""),
             (false, "hi\n"),
             (false, "inline `codeblock`\n"),
             (false, "`code`\n"),
             (false, "    hi\n"),
             (false, ">     hi\n"),
+            // Some single line code blocks look close enough when interpreted as an inline code
+            // span.
+            (false, "```\nhi\n```"),
+            (false, "```\nx x\n```"),
+            (false, "hi\n\n```\nhi\n```\n\nhi"),
+            (false, "1.  ```\n    hi\n    ```"),
+            (false, "1.  ```\n    hi\n    ```\n\n    hi"),
+            (false, "> ```\n> hi\n> ```"),
+            (true, "x\n```\nhi\n```"),
+            (true, "```rust\nhi\n```"),
+            (true, "> ```\n> hi\n> hi\n> ```"),
+            (true, "1.  hi\n    ```\n    hi\n    ```\n"),
+            (true, "```\n&\n&\n```"),
+            (true, "```\n\tx\n```"),
+            (true, "```\n x\n```"),
+            (true, "```\nx \n```"),
+            (true, "```\nx\tx\n```"),
+            (true, "```\nx  x\n```"),
         ];
-        for (contains, body) in tests {
-            assert_eq!(*contains, contains_fenced_block(body));
+        for (want, body) in tests {
+            let got = contains_problematic_fenced_block(body);
+            if *want != got {
+                let arena = comrak::Arena::new();
+                let ast = comrak::parse_document(&arena, body, &comrak_opts());
+                println!("AST: {:#?}", ast);
+                panic!(
+                    "Expected {:?} for contains_problematic_fenced_block({:?})",
+                    *want, body
+                );
+            }
         }
     }
 
