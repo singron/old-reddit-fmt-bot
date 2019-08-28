@@ -12,6 +12,7 @@ use std::cell::RefMut;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+/// If true, don't create or edit comments.
 const DRY_RUN: bool = false;
 
 const VERSION: &str = git_version::git_describe!("--always", "--dirty");
@@ -22,6 +23,8 @@ fn comrak_opts() -> comrak::ComrakOptions {
     }
 }
 
+/// Check if this reddit markdown body contains fenced code blocks that won't render well in old
+/// reddit.
 fn contains_problematic_fenced_block<'a>(body: &str) -> bool {
     let arena = comrak::Arena::new();
     let ast = comrak::parse_document(&arena, body, &comrak_opts());
@@ -66,9 +69,11 @@ fn contains_problematic_fenced_block<'a>(body: &str) -> bool {
     return false;
 }
 
+/// Retrieve a password from pass (password-store).
 fn get_pass(p: &str) -> String {
     let res = std::process::Command::new("pass")
         .arg("show")
+        .arg("--")
         .arg(p)
         .output()
         .unwrap();
@@ -87,6 +92,7 @@ fn get_pass(p: &str) -> String {
     pass
 }
 
+/// Strip the type prefix (e.g. "t1_") from a reddit fullname.
 fn strip_type(s: &str) -> &str {
     let b = s.as_bytes();
     if let (Some(b't'), Some(d), Some(b'_')) = (b.get(0), b.get(1), b.get(2)) {
@@ -97,6 +103,7 @@ fn strip_type(s: &str) -> &str {
     s
 }
 
+/// Find a comment with the given id recursively in a comment listing.
 fn find_comment<'a>(
     comments: &'a orca::data::Listing<orca::data::Comment>,
     comment_id: &str,
@@ -115,17 +122,21 @@ fn find_comment<'a>(
     None
 }
 
+/// Backoff keeps track of net failures and conveniently allows waiting after failed requests.
 struct Backoff {
     fails: u64,
 }
 
 impl Backoff {
+    /// Decrease net failures. Call this after a successful call.
     fn ok(&mut self) {
         if self.fails > 0 {
             self.fails -= 1;
         }
     }
 
+    /// Increase net failure and sleep accordingly with jitter. Call this after failed calls before
+    /// retrying.
     fn fail_wait(&mut self) {
         use rand::Rng;
         std::thread::sleep(Duration::from_millis(
@@ -134,6 +145,8 @@ impl Backoff {
         self.fails = (self.fails + 1).min(10);
     }
 
+    /// Automatically call ok or fail_wait and retry for a closure call. on_err will be called on
+    /// each error value.
     fn loop_wait<T, E, C: Fn() -> Result<T, E>, H: Fn(E)>(&mut self, call: C, on_err: H) -> T {
         loop {
             match call() {
@@ -147,6 +160,7 @@ impl Backoff {
     }
 }
 
+/// A comment this bot made.
 struct MadeComment {
     parent_name: String,
     name: String,
@@ -174,10 +188,10 @@ fn write_reply(out: &mut String, comment: &orca::data::Comment) {
     .unwrap();
 }
 
-struct MultiSubreddit<'a> {
+struct Bot<'a> {
     app: &'a orca::App,
     username: &'a str,
-    names: &'static [&'static str],
+    subreddit_names: &'static [&'static str],
     caches: Vec<VecDeque<orca::data::Comment>>,
     recent_comment_names: Vec<VecDeque<String>>,
     comments_made: Vec<MadeComment>,
@@ -188,18 +202,18 @@ struct MultiSubreddit<'a> {
     last_new_comment: Option<Instant>,
 }
 
-impl<'a> MultiSubreddit<'a> {
+impl<'a> Bot<'a> {
     fn new(
         app: &'a orca::App,
         username: &'a str,
-        names: &'static [&'static str],
-    ) -> MultiSubreddit<'a> {
-        MultiSubreddit {
+        subreddit_names: &'static [&'static str],
+    ) -> Bot<'a> {
+        Bot {
             app,
             username,
-            names,
-            caches: vec![VecDeque::new(); names.len()],
-            recent_comment_names: vec![VecDeque::new(); names.len()],
+            subreddit_names,
+            caches: vec![VecDeque::new(); subreddit_names.len()],
+            recent_comment_names: vec![VecDeque::new(); subreddit_names.len()],
             comments_made: Vec::new(),
             comments_made_dirty: true,
             last_comments_made_check: None,
@@ -209,6 +223,7 @@ impl<'a> MultiSubreddit<'a> {
         }
     }
 
+    /// Load or reload the list of comments this bot has made.
     fn load_comments_made(&mut self) -> Result<(), failure::Error> {
         let mut opts = orca::app::UserListingOpts::default();
         opts.limit(100);
@@ -229,6 +244,8 @@ impl<'a> MultiSubreddit<'a> {
         Ok(())
     }
 
+    /// Load the caches of recent comments for each subreddit, and possibly refresh the list of
+    /// comments made.
     fn refresh(&mut self) {
         if let Some(last_refresh) = self.last_refresh {
             let min_refresh = Duration::from_secs(5);
@@ -237,7 +254,7 @@ impl<'a> MultiSubreddit<'a> {
                 std::thread::sleep(min_refresh - e);
             }
         }
-        for (idx, subreddit) in self.names.iter().enumerate() {
+        for (idx, subreddit) in self.subreddit_names.iter().enumerate() {
             if !self.caches[idx].is_empty() {
                 continue;
             }
@@ -308,6 +325,7 @@ impl<'a> MultiSubreddit<'a> {
         self.last_refresh = Some(Instant::now());
     }
 
+    /// This is called for each recent comment in the requested subreddits.
     fn on_new_comment(&mut self, comment: orca::data::Comment) {
         use std::convert::TryFrom;
         let created = std::time::SystemTime::UNIX_EPOCH
@@ -383,6 +401,8 @@ impl<'a> MultiSubreddit<'a> {
         }
     }
 
+    /// Check each comment this bot has made. For now, this bot checks if the parent comment has
+    /// been remediated and then edits its own comment.
     fn check_comments_made(&mut self) {
         for comment_made in &mut self.comments_made {
             if comment_made.edited {
@@ -435,10 +455,13 @@ impl<'a> MultiSubreddit<'a> {
         self.last_comments_made_check = Some(Instant::now());
     }
 
+    // Run the main processing loop.
     fn process(&mut self) {
         let mut error_mode = 0;
         loop {
             if let Some(last_new_comment) = self.last_new_comment {
+                // If we haven't seen a new comment in a while, increase logging verbosity
+                // (error_mode).
                 let minutes = last_new_comment.elapsed().as_secs() as f64 / 60.0;
                 if minutes > 90.0 {
                     if error_mode != 3 {
@@ -462,6 +485,8 @@ impl<'a> MultiSubreddit<'a> {
             }
             self.refresh();
             loop {
+                // Process comments in chronological order. Each subreddit cache is sorted, so we
+                // just need to pick the cache with the oldest first comment.
                 let mut created_utc = None;
                 let mut min_idx = None;
                 for (idx, cache) in self.caches.iter().enumerate() {
@@ -547,9 +572,9 @@ fn main() {
     drop(id);
     drop(password);
 
-    let mut multi = MultiSubreddit::new(&app, username, &["programming", "rust", "NixOS", "linux"]);
+    let mut bot = Bot::new(&app, username, &["programming", "rust", "NixOS", "linux"]);
     loop {
-        match multi.load_comments_made() {
+        match bot.load_comments_made() {
             Ok(_) => break,
             Err(e) => {
                 println!("Error in load_comments_made: {}", e);
@@ -557,7 +582,7 @@ fn main() {
             }
         }
     }
-    multi.process();
+    bot.process();
 }
 
 #[cfg(test)]
