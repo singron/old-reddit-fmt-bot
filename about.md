@@ -6,14 +6,43 @@ would put "unofficial" in the name.
 
 ## How can I easily transform a fenced code block into an indented code block?
 
-For Linux, you can copy the contents of your code block to your clipboard, run
-the below command, then paste your clipboard to overwrite your code block.
+### For linux
+
+Copy the contents of your code block to your clipboard, run the below
+command, then paste your clipboard to overwrite your code block.
 
 ```bash
 xclip -out -selection clipboard | sed 's/^/    /' | xclip -in -selection clipboard
 ```
 
-If you use mac or windows, please contribute similar commands or techniques!
+### For OSX
+
+Copy the contents of your code block to your clipboard, run the below
+command in a terminal, then paste your clipboard to overwrite your
+code block.
+
+```bash
+pbpaste | sed 's/^/    /' | pbcopy
+```
+
+If your primary browser is Safari, you can also create a Service for this:
+
+* open Automator
+* choose New Document > Service
+* check "Output replaces selected text" in the header
+* in the right pane, search for "shell", drag "Run Shell Script" to
+  the right pane
+* select "/bin/sh" as shell
+* replace the text (`cat`) by `sed 's/^/    /'`
+* save as whatever you want (e.g. "indent" or "code block")
+
+From now on, when in safari (or more generally a "Cocoa" text control)
+you can just select a block of text, control-click > Services > Indent
+to invoke the workflow on the selected block.
+
+### For Windows
+
+Please contribute similar commands or techniques!
 
 ## Why does this bot even exist?
 
