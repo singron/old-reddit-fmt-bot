@@ -572,7 +572,7 @@ fn main() {
     drop(id);
     drop(password);
 
-    let mut bot = Bot::new(&app, username, &["programming", "rust", "NixOS", "linux"]);
+    let mut bot = Bot::new(&app, username, &["programming", "rust", "NixOS"]);
     loop {
         match bot.load_comments_made() {
             Ok(_) => break,
